@@ -21,194 +21,281 @@
 
 namespace simple_router {
 
-void SimpleRouter::handleArp(const Buffer& packet, const std::string& inIface){
-  std::cout << "Handling ARP packet" << std::endl;
-  // check the validity of arp header
-  arp_hdr* arp_ptr = (struct arp_hdr*)(packet.data() + sizeof(ethernet_hdr));
-  // size
-  if (packet.size() != sizeof(arp_hdr) + sizeof(ethernet_hdr)){
-    std::cout<< "ARP header has insufficient length, ignoring." << std::endl;
-    return;
-  }
-  // hardware type
-  if(ntohs(arp_ptr->arp_hrd) != arp_hrd_ethernet){
-    std::cout<< "ARP hardware type is not ethernet, ignoring." << std::endl;
-    return;
-  }
-  // protocol type
-  if(ntohs(arp_ptr->arp_pro) != ethertype_ip){
-    std::cout<< "ARP protocol type is not IPv4, ignoring." << std::endl;
-    return;
-  }
-  // hardware addr len
-  if(arp_ptr->arp_hln != ETHER_ADDR_LEN){
-    std::cout<< "ARP hardware has invalid address length, ignoring." << std::endl;
-    return;
-  }
+// 由于时间限制，未启用头的解析模式
+bool SimpleRouter::parseEthernetHeader(const Buffer& packet, ParsedEthernetHeader& parsed_eth_hdr) {
+    if (packet.size() < sizeof(ethernet_hdr)) {
+        std::cerr << "Packet too short for Ethernet header." << std::endl;
+        return false;
+    }
+    std::memcpy(&parsed_eth_hdr.eth_hdr, packet.data(), sizeof(ethernet_hdr));
+    return true;
+}
 
-  // proto len
-  if(arp_ptr->arp_pln != 0x04){
-    std::cout<< "ARP protocol has invalid address length, ignoring." << std::endl;
+// 解析 ARP 头
+bool SimpleRouter::parseArpHeader(const Buffer& packet, ParsedArpHeader& parsed_arp_hdr) {
+    if (packet.size() < sizeof(ethernet_hdr) + sizeof(arp_hdr)) {
+        std::cerr << "Packet too short for ARP header." << std::endl;
+        return false;
+    }
+    std::memcpy(&parsed_arp_hdr.header, packet.data() + sizeof(ethernet_hdr), sizeof(arp_hdr));
+    return true;
+}
+
+// 解析 IPv4 头
+bool SimpleRouter::parseIpHeader(const Buffer& packet, ParsedIpHeader& parsed_ip_hdr) {
+    if (packet.size() < sizeof(ethernet_hdr) + sizeof(ip_hdr)) {
+        std::cerr << "Packet too short for IP header." << std::endl;
+        return false;
+    }
+    ip_hdr temp_ip;
+    std::memcpy(&temp_ip, packet.data() + sizeof(ethernet_hdr), sizeof(ip_hdr));
+    size_t ip_header_length = temp_ip.ip_hl * 4;
+    if (ip_header_length < sizeof(ip_hdr)) {
+        std::cerr << "Invalid IP header length." << std::endl;
+        return false;
+    }
+    if (packet.size() < sizeof(ethernet_hdr) + ip_header_length) {
+        std::cerr << "Packet too short for full IP header." << std::endl;
+        return false;
+    }
+    std::memcpy(&parsed_ip_hdr.header, packet.data() + sizeof(ethernet_hdr), sizeof(ip_hdr));
+    parsed_ip_hdr.header_length = ip_header_length;
+    return true;
+}
+
+
+void SimpleRouter::handleArp(const Buffer& packet, const std::string& inIface) {
+  std::cout << "Handling ARP packet" << std::endl;
+  
+  // 检查ARP包的有效性
+  arp_hdr* arp_ptr = (struct arp_hdr*)(packet.data() + sizeof(ethernet_hdr));
+  
+  // 检查包长度
+  if (packet.size() != sizeof(arp_hdr) + sizeof(ethernet_hdr)) {
+    std::cout << "ARP header has insufficient length, ignoring." << std::endl;
     return;
   }
-  // opcode
-  if(ntohs(arp_ptr->arp_op) != arp_op_request && ntohs(arp_ptr->arp_op) != arp_op_reply){
-    std::cout<< "ARP opcode is neither request nor reply, ignoring." << std::endl;
+  
+  // 检查硬件类型
+  if (ntohs(arp_ptr->arp_hrd) != arp_hrd_ethernet) {
+    std::cout << "ARP hardware type is not ethernet, ignoring." << std::endl;
     return;
   }
-  // handle request or reply
-  // request
-  if(ntohs(arp_ptr->arp_op) == arp_op_request){
+  
+  // 检查协议类型
+  if (ntohs(arp_ptr->arp_pro) != ethertype_ip) {
+    std::cout << "ARP protocol type is not IPv4, ignoring." << std::endl;
+    return;
+  }
+  
+  // 检查硬件地址长度
+  if (arp_ptr->arp_hln != ETHER_ADDR_LEN) {
+    std::cout << "ARP hardware has invalid address length, ignoring." << std::endl;
+    return;
+  }
+  
+  // 检查协议地址长度
+  if (arp_ptr->arp_pln != 0x04) {
+    std::cout << "ARP protocol has invalid address length, ignoring." << std::endl;
+    return;
+  }
+  
+  // 检查ARP操作码
+  uint16_t arp_op = ntohs(arp_ptr->arp_op);
+  if (arp_op != arp_op_request && arp_op != arp_op_reply) {
+    std::cout << "ARP opcode is neither request nor reply, ignoring." << std::endl;
+    return;
+  }
+  
+  // 处理ARP请求或ARP应答
+  if (arp_op == arp_op_request) {
     handleArpRequest(packet, inIface);
-  }
-  // reply
-  else{
+  } else {  // arp_op_reply
     handleArpReply(packet, inIface);
   }
 }
 
+
 void SimpleRouter::handleArpRequest(const Buffer& packet, const std::string& inIface){
-  std::cout << "Handling ARP request" << std::endl;
+    std::cout << "Handling ARP request" << std::endl;
   
-  // ARP request
-  ethernet_hdr* eth_ptr = (struct ethernet_hdr*)(packet.data());
-  arp_hdr* arp_ptr = (struct arp_hdr*)(packet.data() + sizeof(ethernet_hdr));
-  std::cout << "Received ARP request from IP: " << arp_ptr->arp_sip << ", MAC: " << arp_ptr->arp_sha << std::endl;
-  // ARP reply
-  Buffer reply(packet);
-  ethernet_hdr* rep_eth = (ethernet_hdr*)reply.data();
-  arp_hdr* rep_arp = (arp_hdr*)(reply.data() + sizeof(ethernet_hdr));
+    // 获取以太网头和 ARP 头
+    ethernet_hdr* eth_ptr = (struct ethernet_hdr*)(packet.data());
+    arp_hdr* arp_ptr = (struct arp_hdr*)(packet.data() + sizeof(ethernet_hdr));
   
-  // update params
-  const Interface* iface = findIfaceByName(inIface);
-  if(arp_ptr->arp_tip != iface->ip){
-    std::cout << "Arp destination is not the router, ignoring." << std::endl;
-    return;
-  }
-  // ethernet
-  std::memcpy(rep_eth->ether_shost, iface->addr.data(), ETHER_ADDR_LEN);
-  std::memcpy(rep_eth->ether_dhost, eth_ptr->ether_shost, ETHER_ADDR_LEN);
-  rep_eth->ether_type = htons(ethertype_arp);
+    // 打印 ARP 请求的发送者信息
+    Buffer sender_mac(arp_ptr->arp_sha, arp_ptr->arp_sha + ETHER_ADDR_LEN);  // 转换为 Buffer 类型
+    std::cout << "Received ARP request from IP: " << arp_ptr->arp_sip << ", MAC: " << macToString(sender_mac) << std::endl;
 
-  // arp
-  rep_arp->arp_hrd = htons(0x0001);
-  rep_arp->arp_pro = htons(0x0800);
-  rep_arp->arp_hln = 6;
-  rep_arp->arp_pln = 4;
-  rep_arp->arp_op = htons(0x0002);
-  rep_arp->arp_sip = iface->ip;
-  rep_arp->arp_tip = arp_ptr->arp_sip;
-  std::memcpy(rep_arp->arp_sha, iface->addr.data(), 6);
-  std::memcpy(rep_arp->arp_tha, arp_ptr->arp_sha, 6);
+    // ARP 回复
+    Buffer reply(packet);
+    ethernet_hdr* rep_eth = (ethernet_hdr*)reply.data();
+    arp_hdr* rep_arp = (arp_hdr*)(reply.data() + sizeof(ethernet_hdr));
+    
+    // 查找接口
+    const Interface* iface = findIfaceByName(inIface);
+    
+    // 确保 ARP 请求的目标是本机
+    if (arp_ptr->arp_tip != iface->ip) {
+        std::cout << "ARP request is not for this router, ignoring." << std::endl;
+        return;
+    }
 
-  // send reply
-  sendPacket(reply, inIface);
+    // 设置以太网头
+    std::memcpy(rep_eth->ether_shost, iface->addr.data(), ETHER_ADDR_LEN);
+    std::memcpy(rep_eth->ether_dhost, eth_ptr->ether_shost, ETHER_ADDR_LEN);
+    rep_eth->ether_type = htons(ethertype_arp);
+
+    // 设置 ARP 回复
+    rep_arp->arp_hrd = htons(0x0001);  // Ethernet
+    rep_arp->arp_pro = htons(0x0800);  // IPv4
+    rep_arp->arp_hln = 6;  // MAC 地址长度
+    rep_arp->arp_pln = 4;  // IPv4 地址长度
+    rep_arp->arp_op = htons(0x0002);  // ARP reply
+    rep_arp->arp_sip = iface->ip;  // 回复源 IP（本机的 IP）
+    rep_arp->arp_tip = arp_ptr->arp_sip;  // 请求中的目标 IP（发送者的 IP）
+    std::memcpy(rep_arp->arp_sha, iface->addr.data(), ETHER_ADDR_LEN);  // 本机的 MAC
+    std::memcpy(rep_arp->arp_tha, arp_ptr->arp_sha, ETHER_ADDR_LEN);  // 请求中的源 MAC
+
+    // 发送 ARP 回复包
+    sendPacket(reply, inIface);
 }
 
-void SimpleRouter::handleArpReply(const Buffer& packet, const std::string& inIface){
-  std::cout << "Handling ARP reply" << std::endl;
 
+
+void SimpleRouter::handleArpReply(const Buffer& packet, const std::string& inIface) {
+  std::cout << "Handling ARP reply" << std::endl;
+  
   arp_hdr* arp_ptr = (struct arp_hdr*)((uint8_t*)packet.data() + sizeof(ethernet_hdr));
   uint32_t sender_ip = arp_ptr->arp_sip;
+  
+  // 创建 Buffer 对象
   Buffer sender_mac(arp_ptr->arp_sha, arp_ptr->arp_sha + 6);
-  std::cout << "Received ARP request from IP: " << arp_ptr->arp_sip << ", MAC: " << arp_ptr->arp_sha << std::endl;
-  std::cout << "Received ARP reply: IP: " << ntohl(sender_ip) << " MAC: " << sender_mac.data() << std::endl;
-  // pairing IP/MAC
-  if (!m_arp.lookup(sender_ip)) {
+  
+  // 打印 MAC 地址和 IP
+  std::cout << "Received ARP reply: IP: " << ntohl(sender_ip) << " MAC: " 
+            << macToString(sender_mac) << std::endl;
+  
+  // 处理 IP/MAC 配对
+  auto arp_entry = m_arp.lookup(sender_ip);
+  if (!arp_entry) {
     auto arp_req = m_arp.insertArpEntry(sender_mac, sender_ip);
     if (arp_req) {
-      std::cout << "Handle queued requests for the IP/MAC" << std::endl;
+      std::cout << "Processing queued packets for IP/MAC pair" << std::endl;
       for (const auto& packet : arp_req->packets) {
         handlePacket(packet.packet, packet.iface);
       }
       m_arp.removeRequest(arp_req);
-      } else {
-        std::cout << "No queued requests for the IP/MAC" << std::endl;
-      }
     } else {
-      std::cout << "IP/MAC already exists, ignoring." << std::endl;
+      std::cout << "No queued requests for this IP/MAC pair" << std::endl;
     }
+  } else {
+    std::cout << "IP/MAC pair already exists in ARP table, ignoring." << std::endl;
+  }
 }
 
-void SimpleRouter::sendArpRequest(uint32_t ip){
-  std::cout << "Sending Arp Request" << std::endl;
-  std::cout << "Sending ARP request for IP: " << ntohl(ip) << std::endl;
+
+
+void SimpleRouter::sendArpRequest(uint32_t ip) {
+  std::cout << "Sending ARP Request for IP: " << ntohl(ip) << std::endl;
 
   Buffer req(sizeof(ethernet_hdr) + sizeof(arp_hdr));
-  // look up the routing table
   const RoutingTableEntry entry = m_routingTable.lookup(ip);
   const Interface* outIface = findIfaceByName(entry.ifName);
   const Buffer BROADCAST_ADDR {0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
 
-  // handle ethernet header
+  // 构建以太网头
   ethernet_hdr* eth_ptr = (ethernet_hdr*)(req.data());
-  memcpy(eth_ptr->ether_shost, outIface->addr.data(), ETHER_ADDR_LEN);
-  memcpy(eth_ptr->ether_dhost, BROADCAST_ADDR.data(), ETHER_ADDR_LEN);
+  std::memcpy(eth_ptr->ether_shost, outIface->addr.data(), ETHER_ADDR_LEN);
+  std::memcpy(eth_ptr->ether_dhost, BROADCAST_ADDR.data(), ETHER_ADDR_LEN);
   eth_ptr->ether_type = htons(ethertype_arp);
 
-  // handle ARP
+  // 构建ARP请求
   arp_hdr* req_arp = (arp_hdr*)(req.data() + sizeof(ethernet_hdr));
   req_arp->arp_hrd = htons(0x0001);
   req_arp->arp_pro = htons(0x0800);
-  req_arp->arp_hln = 0x06;
-  req_arp->arp_pln = 0x04;
+  req_arp->arp_hln = 6;
+  req_arp->arp_pln = 4;
   req_arp->arp_op = htons(arp_op_request);
   req_arp->arp_sip = outIface->ip;
   req_arp->arp_tip = ip;
-  memcpy(req_arp->arp_sha, outIface->addr.data(), ETHER_ADDR_LEN);
-  memcpy(req_arp->arp_tha, BROADCAST_ADDR.data(), ETHER_ADDR_LEN);
+  std::memcpy(req_arp->arp_sha, outIface->addr.data(), ETHER_ADDR_LEN);
+  std::memcpy(req_arp->arp_tha, BROADCAST_ADDR.data(), ETHER_ADDR_LEN);
     
-  // send request
+  // 发送ARP请求
   sendPacket(req, outIface->name);
 }
 
+
 void SimpleRouter::handleIPv4(const Buffer& packet, const std::string& inIface){
   std::cout << "Handling IPv4 packet" << std::endl;
-  // check the validity of ip header
-  ip_hdr* ip_ptr = (ip_hdr*)(packet.data() + sizeof(ethernet_hdr));
-  // size
-  if(packet.size() < sizeof(ethernet_hdr) + sizeof(ip_hdr)){
-    std::cout<< "IP header has insufficient length, ignoring." << std::endl;
+  
+  // Check if the packet is large enough to contain both Ethernet and IP headers
+  if (packet.size() < sizeof(ethernet_hdr) + sizeof(ip_hdr)) {
+    std::cout << "IP header has insufficient length, ignoring." << std::endl;
     return;
   }
-  // checksum
-  uint8_t ip_header_length = ip_ptr->ip_hl * 4; // 计算 IP 头部长度
-  std::cout << "IP Header Length: " << static_cast<int>(ip_header_length) << " bytes" << std::endl;
-  std::cout << "Computed Checksum: " << std::hex << cksum(ip_ptr, ip_header_length) << std::dec << std::endl;
-  if (cksum(ip_ptr, ip_header_length) != 0xFFFF) {
-      std::cout << "IP header checksum is invalid, ignoring." << std::endl;
-      return;
-  }
   
-  // classify datagrams by dest
+  // Get IP header pointer, safely check bounds
+  ip_hdr* ip_ptr = (ip_hdr*)(packet.data() + sizeof(ethernet_hdr));
+  
+  // Check if the IP pointer is valid (not null, within bounds)
+  if (ip_ptr == nullptr || packet.size() < sizeof(ethernet_hdr) + sizeof(ip_hdr) + ip_ptr->ip_hl * 4) {
+    std::cout << "Invalid IP header or insufficient packet length, ignoring." << std::endl;
+    return;
+  }
+
+  // Compute the IP header length
+  uint8_t ip_header_length = ip_ptr->ip_hl * 4;
+  if (ip_header_length < sizeof(ip_hdr)) {
+    std::cout << "Invalid IP header length, ignoring." << std::endl;
+    return;
+  }
+
+  std::cout << "IP Header Length: " << static_cast<int>(ip_header_length) << " bytes" << std::endl;
+  
+  // Validate checksum
+  uint16_t computed_checksum = cksum(ip_ptr, ip_header_length);
+  std::cout << "Computed Checksum: " << std::hex << computed_checksum << std::dec << std::endl;
+  
+  // Compare checksum to 0xFFFF (standard checksum check for IP headers)
+  if (computed_checksum != 0xFFFF) {
+    std::cout << "IP header checksum is invalid, ignoring." << std::endl;
+    return;
+  }
+
+  // Classify datagrams by destination
   const Interface* destIface = findIfaceByIp(ip_ptr->ip_dst);
-  if (destIface != nullptr) {// destinated to the router  
-    std::cout << "IP packet destinated to the router." << std::endl;
-    // ICMP
+  if (destIface != nullptr) {  // Packet is destined for the router
+    std::cout << "IP packet destined for the router." << std::endl;
+    
+    // Check if the protocol is ICMP
     if (ip_ptr->ip_p == ip_protocol_icmp) {
-      std::cout << "Handle ICMP." << std::endl;
+      std::cout << "Handling ICMP packet." << std::endl;
       handleICMP(packet, inIface);
     }
-    // TCP & UDP
-    else if(ip_ptr->ip_p == 0x0006 || ip_ptr->ip_p == 0x0011){
-      std::cout << "Sent Port unreachable." << std::endl;
+    // Check if the protocol is TCP (0x06) or UDP (0x11)
+    else if (ip_ptr->ip_p == 0x06 || ip_ptr->ip_p == 0x11) {
+      std::cout << "Handling Port Unreachable ICMP response." << std::endl;
       handleICMPPortUnreachable(packet, inIface);
     }
-    else{
-      std::cout << "Unsupported protocol, ignoring" << std::endl;
+    else {
+      std::cout << "Unsupported protocol, ignoring." << std::endl;
     }
-  }
-  else{// to be forwarded
-  std::cout << "Datagrams to be forwarded." << std::endl;
-    if ((ip_ptr->ip_ttl == 1) || (ip_ptr->ip_ttl == 0)) {// 超时
-    std::cout << "Sent time exceeded message." << std::endl;
+  } else {  // Packet to be forwarded
+    std::cout << "Datagram to be forwarded." << std::endl;
+
+    // Time-to-live (TTL) check
+    if (ip_ptr->ip_ttl == 1 || ip_ptr->ip_ttl == 0) {  // TTL expired
+      std::cout << "Sending Time Exceeded ICMP message." << std::endl;
       handleICMPTimeExceeded(packet, inIface);
-    }
-    else{
+    } else {
+      std::cout << "Forwarding IPv4 packet." << std::endl;
       forwardIPv4(packet, inIface);
     }
   }
 }
+
 
 void SimpleRouter::forwardIPv4(const Buffer& packet, const std::string& inIface) {
     std::cout << "Forwarding IPv4 packet" << std::endl;
@@ -282,46 +369,76 @@ void SimpleRouter::forwardIPv4(const Buffer& packet, const std::string& inIface)
 
 void SimpleRouter::handleICMP(const Buffer& packet, const std::string& inIface){
   std::cout << "Handling ICMP packet" << std::endl;
-  // check the validity of icmp header
-  icmp_hdr* icmp_ptr = (struct icmp_hdr*)(packet.data() + sizeof(ip_hdr) + sizeof(ethernet_hdr));
-  // size
-  if(packet.size() < sizeof(icmp_hdr) + sizeof(ip_hdr) + sizeof(ethernet_hdr)){
-    std::cout << "ICMP header has insufficient length, ignoring." << std::endl;
-    return;
-  }
-  // type
-  if(icmp_ptr->icmp_type != 0x08 || icmp_ptr->icmp_code != 0x00){
-    std::cout << "ICMP type is not echo request, ignoring." << std::endl;
-    return;
-  }
-  // checksum
-  if (cksum((uint8_t*)icmp_ptr, packet.size() - sizeof(ip_hdr) - sizeof(ethernet_hdr)) != 0xffff) {
-    std::cout << "ICMP header checksum is invalid, ignoring." << std::endl;
+  
+  // Check if the packet is large enough to contain the Ethernet, IP, and ICMP headers
+  if (packet.size() < sizeof(ethernet_hdr) + sizeof(ip_hdr) + sizeof(icmp_hdr)) {
+    std::cout << "ICMP packet has insufficient length, ignoring." << std::endl;
     return;
   }
 
+  // Get pointer to the ICMP header and perform pointer validity checks
+  icmp_hdr* icmp_ptr = (icmp_hdr*)(packet.data() + sizeof(ethernet_hdr) + sizeof(ip_hdr));
+  if (icmp_ptr == nullptr) {
+    std::cout << "ICMP header pointer is invalid, ignoring." << std::endl;
+    return;
+  }
+
+  // Ensure the ICMP type is an Echo Request (type 8, code 0)
+  if (icmp_ptr->icmp_type != 0x08 || icmp_ptr->icmp_code != 0x00) {
+    std::cout << "ICMP type is not Echo Request, ignoring." << std::endl;
+    return;
+  }
+
+  // Validate ICMP checksum
+  uint16_t icmp_checksum = cksum((uint8_t*)icmp_ptr, packet.size() - sizeof(ip_hdr) - sizeof(ethernet_hdr));
+  if (icmp_checksum != 0xFFFF) {
+    std::cout << "ICMP checksum is invalid, ignoring." << std::endl;
+    return;
+  }
+
+  // Call handleEchoReply function if all checks pass
   handleEchoReply(packet, inIface);
 }
 
 void SimpleRouter::handleICMPt3(const Buffer& packet, const std::string& inIface, uint8_t type, uint8_t code){
-  ethernet_hdr* eth_ptr = (struct ethernet_hdr*)((uint8_t*)packet.data());
-  ip_hdr* ip_ptr = (struct ip_hdr*)((uint8_t*)packet.data() + sizeof(ethernet_hdr));
+  std::cout << "Handling ICMP Type " << (int)type << " Code " << (int)code << " packet" << std::endl;
 
-  Buffer reply(sizeof(ethernet_hdr)+sizeof(ip_hdr)+sizeof(icmp_t3_hdr));
+  // Check if the packet has the minimum size for Ethernet and IP headers
+  if (packet.size() < sizeof(ethernet_hdr) + sizeof(ip_hdr)) {
+    std::cout << "Packet is too small to process, ignoring." << std::endl;
+    return;
+  }
+
+  // Get pointers to Ethernet and IP headers
+  ethernet_hdr* eth_ptr = (ethernet_hdr*)((uint8_t*)packet.data());
+  ip_hdr* ip_ptr = (ip_hdr*)((uint8_t*)packet.data() + sizeof(ethernet_hdr));
+
+  if (eth_ptr == nullptr || ip_ptr == nullptr) {
+    std::cout << "Invalid Ethernet or IP header, ignoring." << std::endl;
+    return;
+  }
+
+  // Prepare the reply packet buffer
+  Buffer reply(sizeof(ethernet_hdr) + sizeof(ip_hdr) + sizeof(icmp_t3_hdr));
   const Interface* outIface = findIfaceByName(inIface);
 
-  // ethernet
-  ethernet_hdr * rep_eth = (ethernet_hdr *)reply.data();
-  memcpy(rep_eth->ether_dhost, eth_ptr->ether_shost, ETHER_ADDR_LEN);
-  memcpy(rep_eth->ether_shost, eth_ptr->ether_dhost, ETHER_ADDR_LEN);
+  if (outIface == nullptr) {
+    std::cout << "Output interface not found, ignoring." << std::endl;
+    return;
+  }
+
+  // Populate Ethernet header for the reply
+  ethernet_hdr *rep_eth = (ethernet_hdr*)reply.data();
+  memcpy(rep_eth->ether_dhost, eth_ptr->ether_shost, ETHER_ADDR_LEN);  // Destination MAC
+  memcpy(rep_eth->ether_shost, eth_ptr->ether_dhost, ETHER_ADDR_LEN);  // Source MAC
   rep_eth->ether_type = htons(ethertype_ip);
 
-  // ip
-  ip_hdr * rep_ip = (ip_hdr *)(reply.data()+sizeof(ethernet_hdr));
-  memcpy(rep_ip, ip_ptr, sizeof(ip_hdr));
+  // Populate IP header for the reply
+  ip_hdr *rep_ip = (ip_hdr*)(reply.data() + sizeof(ethernet_hdr));
+  memcpy(rep_ip, ip_ptr, sizeof(ip_hdr));  // Copy original IP header
   rep_ip->ip_tos = 0;
-  rep_ip->ip_len = htons(sizeof(ip_hdr)+sizeof(icmp_t3_hdr));
-  rep_ip->ip_id  = 0;                                                                                                                                                                                                                                                                                                                                                                                                                                                                           
+  rep_ip->ip_len = htons(sizeof(ip_hdr) + sizeof(icmp_t3_hdr));
+  rep_ip->ip_id = 0;
   rep_ip->ip_ttl = 64;
   rep_ip->ip_p = ip_protocol_icmp;
   rep_ip->ip_sum = 0;
@@ -329,119 +446,159 @@ void SimpleRouter::handleICMPt3(const Buffer& packet, const std::string& inIface
   rep_ip->ip_dst = ip_ptr->ip_src;
   rep_ip->ip_sum = cksum(rep_ip, sizeof(ip_hdr));
 
-  // icmp type3
-  icmp_t3_hdr * rep_icmpt3 = (struct icmp_t3_hdr *)(reply.data()+sizeof(ethernet_hdr)+sizeof(ip_hdr));
+  // Populate ICMP Type 3 header for the reply
+  icmp_t3_hdr *rep_icmpt3 = (icmp_t3_hdr*)(reply.data() + sizeof(ethernet_hdr) + sizeof(ip_hdr));
   rep_icmpt3->icmp_type = type;
   rep_icmpt3->icmp_code = code;
   rep_icmpt3->icmp_sum = 0;
   rep_icmpt3->next_mtu = 0;
   rep_icmpt3->unused = 0;
-  std::memcpy(rep_icmpt3->data, ip_ptr, ICMP_DATA_SIZE);
-  rep_icmpt3->icmp_sum = cksum(rep_icmpt3, sizeof(icmp_t3_hdr));
-  
+  std::memcpy(rep_icmpt3->data, ip_ptr, ICMP_DATA_SIZE);  // Copy part of the IP header to ICMP data
+  rep_icmpt3->icmp_sum = cksum(rep_icmpt3, sizeof(icmp_t3_hdr));  // Calculate ICMP checksum
+
+  // Send the reply packet
   sendPacket(reply, inIface);
 }
 
-void SimpleRouter::handleICMPPortUnreachable(const Buffer& packet,const std::string& inIface){
-  std::cout<<"handling ICMP Port Unreachable packet" << std::endl;
+void SimpleRouter::handleICMPPortUnreachable(const Buffer& packet, const std::string& inIface){
+  std::cout << "Handling ICMP Port Unreachable packet" << std::endl;
   handleICMPt3(packet, inIface, 3, 3);
 }
 
-void SimpleRouter::handleICMPTimeExceeded(const Buffer& packet,const std::string& inIface){
-  std::cout<<"handling ICMP Time Exceeded packet" << std::endl;
+void SimpleRouter::handleICMPTimeExceeded(const Buffer& packet, const std::string& inIface){
+  std::cout << "Handling ICMP Time Exceeded packet" << std::endl;
   handleICMPt3(packet, inIface, 11, 0);
 }
 
 void SimpleRouter::handleICMPHostUnreachable(const Buffer& packet, const std::string& inIface){
-  std::cout<<"handling ICMP Host Unreachable packet" << std::endl;
+  std::cout << "Handling ICMP Host Unreachable packet" << std::endl;
   handleICMPt3(packet, inIface, 3, 1);
 }
 
-void SimpleRouter::handleEchoReply(const Buffer& packet, const std::string& inIface){
-  std::cout << "handling Echo Reply packet" << std::endl;
-  ethernet_hdr* eth_ptr = (struct ethernet_hdr*)((uint8_t*)packet.data());
-  ip_hdr* ip_ptr = (struct ip_hdr*)((uint8_t*)packet.data() + sizeof(ethernet_hdr));
 
-  Buffer reply(packet);
-  // ethernet header
-  ethernet_hdr* rep_eth = (struct ethernet_hdr*)((uint8_t*)reply.data());
-  std::memcpy(rep_eth->ether_dhost, eth_ptr->ether_shost, ETHER_ADDR_LEN);
-  std::memcpy(rep_eth->ether_shost, eth_ptr->ether_dhost, ETHER_ADDR_LEN);
+void SimpleRouter::handleEchoReply(const Buffer& packet, const std::string& inIface){
+  std::cout << "Handling Echo Reply packet" << std::endl;
+
+  // Check if the packet is large enough to contain Ethernet, IP, and ICMP headers
+  if (packet.size() < sizeof(ethernet_hdr) + sizeof(ip_hdr) + sizeof(icmp_hdr)) {
+    std::cout << "Echo Reply packet has insufficient length, ignoring." << std::endl;
+    return;
+  }
+
+  // Get pointers to Ethernet and IP headers
+  ethernet_hdr* eth_ptr = (ethernet_hdr*)((uint8_t*)packet.data());
+  ip_hdr* ip_ptr = (ip_hdr*)((uint8_t*)packet.data() + sizeof(ethernet_hdr));
+
+  if (eth_ptr == nullptr || ip_ptr == nullptr) {
+    std::cout << "Invalid Ethernet or IP header, ignoring." << std::endl;
+    return;
+  }
+
+  // Prepare the reply packet
+  Buffer reply(packet); // Copy the original packet to modify it
+
+  // Ethernet header
+  ethernet_hdr* rep_eth = (ethernet_hdr*)((uint8_t*)reply.data());
+  std::memcpy(rep_eth->ether_dhost, eth_ptr->ether_shost, ETHER_ADDR_LEN);  // Destination MAC
+  std::memcpy(rep_eth->ether_shost, eth_ptr->ether_dhost, ETHER_ADDR_LEN);  // Source MAC
   rep_eth->ether_type = htons(ethertype_ip);
 
-  // ip header
-  ip_hdr* rep_ip = (struct ip_hdr*)((uint8_t*)reply.data() + sizeof(ethernet_hdr));
-  rep_ip->ip_id = 0;
-  rep_ip->ip_src = ip_ptr->ip_dst;
+  // IP header
+  ip_hdr* rep_ip = (ip_hdr*)((uint8_t*)reply.data() + sizeof(ethernet_hdr));
+  rep_ip->ip_id = 0;  // Clear the ID
+  rep_ip->ip_src = ip_ptr->ip_dst;  // Swap the source and destination IPs
   rep_ip->ip_dst = ip_ptr->ip_src;
-  rep_ip->ip_ttl = 64;
-  rep_ip->ip_sum = 0;
-  rep_ip->ip_sum = cksum(rep_ip, sizeof(ip_hdr));
+  rep_ip->ip_ttl = 64;  // Set TTL to 64 for the reply
+  rep_ip->ip_sum = 0;  // Reset checksum before recalculating
+  rep_ip->ip_sum = cksum(rep_ip, sizeof(ip_hdr));  // Recalculate IP checksum
 
-  // icmp header
-  icmp_hdr* rep_icmp = (struct icmp_hdr*)((uint8_t*)reply.data() + sizeof(ip_hdr) + sizeof(ethernet_hdr));
-  rep_icmp->icmp_type = 0x00;
-  rep_icmp->icmp_code = 0x00;
-  rep_icmp->icmp_sum = 0;
-  rep_icmp->icmp_sum = cksum((uint8_t*)rep_icmp, reply.size() - sizeof(ip_hdr) - sizeof(ethernet_hdr));
+  // ICMP header
+  icmp_hdr* rep_icmp = (icmp_hdr*)((uint8_t*)reply.data() + sizeof(ip_hdr) + sizeof(ethernet_hdr));
+  rep_icmp->icmp_type = 0x00;  // Set ICMP type to Echo Reply (0)
+  rep_icmp->icmp_code = 0x00;  // Set ICMP code to 0
+  rep_icmp->icmp_sum = 0;  // Reset checksum before recalculating
+  rep_icmp->icmp_sum = cksum((uint8_t*)rep_icmp, reply.size() - sizeof(ip_hdr) - sizeof(ethernet_hdr));  // Recalculate ICMP checksum
 
+  // Log the details of the reply
   std::cout << "Echo Reply: src_ip=" << rep_ip->ip_src << ", dst_ip=" << rep_ip->ip_dst << std::endl;
   std::cout << "ICMP Type: " << static_cast<int>(rep_icmp->icmp_type) << ", Code: " << static_cast<int>(rep_icmp->icmp_code) << std::endl;
-    
+
+  // Send the reply packet
   sendPacket(reply, inIface);
 }
+
 
 //////////////////////////////////////////////////////////////////////////
 //////////////////////////////////////////////////////////////////////////
 // IMPLEMENT THIS METHOD
-void
-SimpleRouter::handlePacket(const Buffer& packet, const std::string& inIface)
+void SimpleRouter::handlePacket(const Buffer& packet, const std::string& inIface)
 {
   std::cerr << "Got packet of size " << packet.size() << " on interface " << inIface << std::endl;
 
+  // Check if interface exists
   const Interface* iface = findIfaceByName(inIface);
   if (iface == nullptr) {
     std::cerr << "Received packet, but interface is unknown, ignoring" << std::endl;
     return;
   }
 
-  std::cerr << getRoutingTable() << std::endl;
+  std::cerr << "Routing Table:\n" << getRoutingTable() << std::endl;
 
-  // FILL THIS IN
-
-  // check the validity of ethernet header
-  // size
-  if(packet.size() < sizeof(ethernet_hdr)){
-    std::cout<< "Ethernet header has insufficient length, ignored." << std::endl;
+  // Check the validity of Ethernet header
+  if (packet.size() < sizeof(ethernet_hdr)) {
+    std::cout << "Ethernet header has insufficient length, ignored." << std::endl;
     return;
   }
-  // type
-  ethernet_hdr* eth_hdr = (ethernet_hdr*) packet.data();
+
+  // Extract Ethernet header and check the type
+  ethernet_hdr* eth_hdr = (ethernet_hdr*)packet.data();
   uint16_t eth_type = ethertype((uint8_t*)eth_hdr);
-  if(eth_type != ethertype_ip && eth_type != ethertype_arp){
+
+  // Check supported Ethernet types
+  if (eth_type != ethertype_ip && eth_type != ethertype_arp) {
     std::cout << "Extracted Ethernet Type: 0x" << std::hex << eth_type << std::dec << std::endl;
-    std::cout<< "Ethernet frame has unsupported type, ignored." << std::endl;
+    std::cout << "Ethernet frame has unsupported type, ignored." << std::endl;
     return;
   }
-  // dest addr: router or broadcast
+
+  // Check destination address (either router's interface MAC or broadcast)
+  bool valid_dest = false;
   if (std::memcmp(eth_hdr->ether_dhost, iface->addr.data(), ETHER_ADDR_LEN) == 0) {
-    std::cout << "Destination host is the interface MAC address of router" << std::endl;
-  }
-  else if (std::all_of(eth_hdr->ether_dhost, eth_hdr->ether_dhost + 6, [](uint8_t a) { return a == 0xff; })) {
-    std::cout << "Destination host is broadcast address." << std::endl;
+    std::cout << "Destination is the router's interface MAC address." << std::endl;
+    valid_dest = true;
+  } else if (std::all_of(eth_hdr->ether_dhost, eth_hdr->ether_dhost + 6, [](uint8_t a) { return a == 0xff; })) {
+    std::cout << "Destination is the broadcast address." << std::endl;
+    valid_dest = true;
   } else {
-    // invalid dest
-    std::cout << "Destination host is invalid, ignored." << std::endl;
+    std::cout << "Destination address is invalid, ignoring." << std::endl;
   }
 
-  // handle by type
-  if(eth_type == ethertype_arp){
-    handleArp(packet, inIface);
+  if (!valid_dest) {
+    std::cerr << "Packet with invalid destination address, ignoring." << std::endl;
+    return;
   }
-  else{
-    handleIPv4(packet, inIface);
+
+  // Handle packet based on Ethernet type
+  try {
+    if (eth_type == ethertype_arp) {
+      std::cout << "Handling ARP packet" << std::endl;
+      handleArp(packet, inIface);
+    }
+    else if (eth_type == ethertype_ip) {
+      std::cout << "Handling IPv4 packet" << std::endl;
+      handleIPv4(packet, inIface);
+    } else {
+      std::cerr << "Unhandled Ethernet type: " << std::hex << eth_type << std::dec << ", ignoring." << std::endl;
+    }
+  }
+  catch (const std::exception& e) {
+    std::cerr << "Exception occurred while handling packet: " << e.what() << std::endl;
+  }
+  catch (...) {
+    std::cerr << "Unknown error occurred while handling packet." << std::endl;
   }
 }
+
 
 void SimpleRouter::printRoutingTable() const {
     std::cout << "Current Routing Table:" << std::endl;

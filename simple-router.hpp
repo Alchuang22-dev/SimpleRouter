@@ -33,6 +33,26 @@ class SimpleRouter
 public:
 
   SimpleRouter();
+  // 解析辅助结构
+    struct ParsedEthernetHeader {
+        ethernet_hdr eth_hdr;
+    };
+
+    struct ParsedArpHeader {
+        arp_hdr header; // 重命名成员变量以避免冲突
+    };
+
+    struct ParsedIpHeader {
+        ip_hdr header; // 重命名成员变量以避免冲突
+        size_t header_length;
+    };
+
+    // 解析函数
+    bool parseEthernetHeader(const Buffer& packet, ParsedEthernetHeader& parsed_eth_hdr);
+    bool parseArpHeader(const Buffer& packet, ParsedArpHeader& parsed_arp_hdr);
+    bool parseIpHeader(const Buffer& packet, ParsedIpHeader& parsed_ip_hdr);
+
+
 
   // handle ARP packet
   void handleArp(const Buffer& packet, const std::string& inIface);
