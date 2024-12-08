@@ -222,30 +222,30 @@ void SimpleRouter::forwardIPv4(const Buffer& packet, const std::string& inIface)
     // 查找 ARP 表条目
     std::cout << "Forwarding packet to: " << ntohl(ip_ptr->ip_dst) << " via " << routing_entry.ifName << std::endl;
     auto arp_entry = m_arp.lookup(ip_ptr->ip_dst);
-    // 在 forwardIPv4 中
     std::cout << "Looking for ARP entry for IP: " << ntohl(ip_ptr->ip_dst) << std::endl;
+    
     if (arp_entry == nullptr) {
-        std::cout << "ARP entry not found, sending ARP request" << std::endl;
-        sendArpRequest(ip_ptr->ip_dst);
+        std::cout << "ARP entry not found, queuing ARP request" << std::endl;
+        // 将 ARP 请求加入队列
+        auto arp_request = m_arp.queueRequest(ip_ptr->ip_dst, packet, inIface);
+        if (arp_request) {
+            std::cout << "ARP request queued for IP: " << ntohl(ip_ptr->ip_dst) << std::endl;
+        } else {
+            std::cerr << "Failed to queue ARP request for IP: " << ntohl(ip_ptr->ip_dst) << std::endl;
+        }
+        return;  // 等待 ARP 请求响应
     }
+
     std::cout << "ARP Table: ";
-    // 遍历 ARP 缓存中的条目
     for (const auto& entry : m_arp.getCacheEntries()) {
-        // 处理 ARP 缓存中的条目
         std::cout << "ARP Entry - IP: " << ntohl(entry->ip) << " MAC: " << entry->mac.data() << std::endl;
     }
-    if (arp_entry == nullptr) {
-        std::cerr << "ARP entry not found for destination IP: " << ntohl(ip_ptr->ip_dst) << std::endl;
-        return;  // 退出处理，避免段错误
-    }
+    
     std::cout << "ARP entry MAC for destination IP: " << ntohl(ip_ptr->ip_dst) << " is " << arp_entry->mac.data() << std::endl;
-
 
     // 根据路由表获取输出接口
     const Interface* outIface = findIfaceByName(routing_entry.ifName);
 
-
-    
     // 准备转发数据包
     Buffer forward(packet);
     ethernet_hdr* fwd_eth = reinterpret_cast<ethernet_hdr*>(forward.data());

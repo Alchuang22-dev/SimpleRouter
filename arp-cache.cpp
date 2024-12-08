@@ -27,38 +27,38 @@ namespace simple_router {
 //////////////////////////////////////////////////////////////////////////
 //////////////////////////////////////////////////////////////////////////
 // IMPLEMENT THIS METHOD
-void
-ArpCache::periodicCheckArpRequestsAndCacheEntries()
-{
-
-  // FILL THIS IN
-  // Remove invalid ARP requests while iterating
-  for (auto iter = m_arpRequests.begin(); iter != m_arpRequests.end();) {
-    if ((*iter)->nTimesSent == 5) {
-      for (auto& pending_packet : (*iter)->packets) {
-        m_router.handleICMPHostUnreachable(pending_packet.packet, pending_packet.iface);
-      }
-      iter = m_arpRequests.erase(iter);
-    } 
-    else {
-      m_router.sendArpRequest((*iter)->ip);
-      (*iter)->timeSent = steady_clock::now();
-      (*iter)->nTimesSent++;
-      ++iter;
+void ArpCache::periodicCheckArpRequestsAndCacheEntries() {
+    // FILL THIS IN
+    // 移除无效的 ARP 请求
+    for (auto iter = m_arpRequests.begin(); iter != m_arpRequests.end();) {
+        if ((*iter)->nTimesSent == 5) {  // 超过最大重试次数
+            for (auto& pending_packet : (*iter)->packets) {
+                // 超时后，发送 ICMP Host Unreachable 错误
+                m_router.handleICMPHostUnreachable(pending_packet.packet, pending_packet.iface);
+            }
+            // 移除该请求
+            iter = m_arpRequests.erase(iter);
+        } else {
+            // 继续发送 ARP 请求
+            m_router.sendArpRequest((*iter)->ip);
+            (*iter)->timeSent = steady_clock::now();
+            (*iter)->nTimesSent++;
+            ++iter;
+        }
     }
-  }
 
-  // Remove invalid cache entries
-  std::vector<std::shared_ptr<ArpEntry>> invalid_entries;
-  for (auto iter = m_cacheEntries.begin(); iter != m_cacheEntries.end(); ++iter) {
-    if (!(*iter)->isValid) {
-      invalid_entries.push_back(*iter);
+    // 清理无效的 ARP 缓存条目
+    std::vector<std::shared_ptr<ArpEntry>> invalid_entries;
+    for (auto iter = m_cacheEntries.begin(); iter != m_cacheEntries.end(); ++iter) {
+        if (!(*iter)->isValid) {
+            invalid_entries.push_back(*iter);
+        }
     }
-  }
-  for(auto entry: invalid_entries){
-    m_cacheEntries.remove(entry);
-  }
+    for (auto entry : invalid_entries) {
+        m_cacheEntries.remove(entry);
+    }
 }
+
 
 //////////////////////////////////////////////////////////////////////////
 //////////////////////////////////////////////////////////////////////////
